@@ -1,0 +1,2 @@
+# multidirectional-2d-fractional-image-edge-detection
+This project is designed to detect the edged of the images more clearly , preserving texture details ,noise robustness,using Grunwald Leitnicov Fractional method.This method overcome the traditional methods like sobel ,prewitt,and detecting more accurately than these methods.Application of this project are in the field of industry inspection system
