@@ -1,0 +1,204 @@
+import cv2  
+import numpy as np  
+import matplotlib.pyplot as plt  
+import time  
+from tkinter import Tk  
+from tkinter.filedialog import askopenfilename  
+
+# ---------- Select Image ----------  
+Tk().withdraw()  
+image_path = askopenfilename(  
+    title="Select an Image",  
+    filetypes=[("Image Files", "*.jpg *.jpeg *.png *.bmp")]  
+)  
+if not image_path:  
+    raise FileNotFoundError("❌ No image selected!")  
+
+img = cv2.imread(image_path)  
+if img is None:  
+    raise FileNotFoundError(f"❌ Could not open image: {image_path}")  
+
+# Convert to grayscale
+gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY).astype(np.float32)  
+print(f"✅ Loaded: {image_path}")  
+
+# ---------- Display Input & Grayscale ----------  
+plt.figure(figsize=(10,5))  
+plt.subplot(1,2,1)  
+plt.imshow(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))  
+plt.title("Input Image")  
+plt.axis('off')  
+
+plt.subplot(1,2,2)  
+plt.imshow(gray, cmap='gray')  
+plt.title("Grayscale Image")  
+plt.axis('off')  
+plt.tight_layout()  
+plt.show()  
+
+# ============================================================  
+# ---------- Fractional Weight Utilities ----------  
+# ============================================================  
+def fractional_weights(order, length=7):  
+    w = [1.0]  
+    for k in range(1, length):  
+        w.append(w[-1] * (-(order - k + 1)) / k)  
+    return np.array(w, dtype=np.float32)  
+
+def create_fractional_masks(order, size=7):  
+    w = fractional_weights(order, size)  
+    mask_x = np.zeros((size, size), np.float32)  
+    mask_y = np.zeros((size, size), np.float32)  
+    mask_d1 = np.zeros((size, size), np.float32)  
+    mask_d2 = np.zeros((size, size), np.float32)  
+    mid = size // 2  
+    for i in range(size):  
+        mask_x[mid, i] = w[i]  
+        mask_y[i, mid] = w[i]  
+        mask_d1[i, i] = w[i]  
+        mask_d2[i, size - i - 1] = w[i]  
+    return mask_x, mask_y, mask_d1, mask_d2  
+
+# ============================================================  
+# ---------- Fractional Edge Detection ----------  
+# ============================================================  
+def fractional_edge_detection(img, order=1.5, size=7, boost=1.6):  
+    gray_img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY).astype(np.float32)  
+    mask_x, mask_y, mask_d1, mask_d2 = create_fractional_masks(order, size)  
+    Fx = cv2.filter2D(gray_img, cv2.CV_32F, mask_x)  
+    Fy = cv2.filter2D(gray_img, cv2.CV_32F, mask_y)  
+    Fd1 = cv2.filter2D(gray_img, cv2.CV_32F, mask_d1)  
+    Fd2 = cv2.filter2D(gray_img, cv2.CV_32F, mask_d2)  
+    mag = np.sqrt(Fx**2 + Fy**2 + Fd1**2 + Fd2**2)  
+    mag = cv2.normalize(mag, None, 0, 255, cv2.NORM_MINMAX)  
+    mag = np.clip(mag * boost, 0, 255)  
+    return mag.astype(np.uint8)  
+
+def adaptive_fractional_edge_detection(img, base_order=1.2, max_order=1.8, size=7, boost=1.8):  
+    gray_img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY).astype(np.float32)  
+    var_map = cv2.Laplacian(gray_img, cv2.CV_32F, ksize=3)**2  
+    var_map = cv2.GaussianBlur(var_map, (5,5), 0)  
+    var_map = cv2.normalize(var_map, None, 0, 1, cv2.NORM_MINMAX)  
+    edges = np.zeros_like(gray_img)  
+    h, w = gray_img.shape  
+    block = 32  
+    for y in range(0, h, block):  
+        for x in range(0, w, block):  
+            y2, x2 = min(y+block, h), min(x+block, w)  
+            local_var = np.mean(var_map[y:y2, x:x2])  
+            order = base_order + (max_order - base_order) * local_var  
+            mask_x, mask_y, mask_d1, mask_d2 = create_fractional_masks(order, size)  
+            Fx = cv2.filter2D(gray_img[y:y2, x:x2], cv2.CV_32F, mask_x)  
+            Fy = cv2.filter2D(gray_img[y:y2, x:x2], cv2.CV_32F, mask_y)  
+            Fd1 = cv2.filter2D(gray_img[y:y2, x:x2], cv2.CV_32F, mask_d1)  
+            Fd2 = cv2.filter2D(gray_img[y:y2, x:x2], cv2.CV_32F, mask_d2)  
+            mag = np.sqrt(Fx**2 + Fy**2 + Fd1**2 + Fd2**2)  
+            mag = cv2.normalize(mag, None, 0, 255, cv2.NORM_MINMAX)  
+            edges[y:y2, x:x2] = mag  
+    edges = np.clip(edges * boost, 0, 255)  
+    return edges.astype(np.uint8)  
+
+# ============================================================  
+# ---------- Traditional Methods ----------  
+# ============================================================  
+def apply_sobel(gray):  
+    return cv2.convertScaleAbs(cv2.Sobel(gray, cv2.CV_64F, 1, 1, ksize=3))  
+
+def apply_prewitt(gray):  
+    prewitt_x = np.array([[1,0,-1],[1,0,-1],[1,0,-1]], np.float32)  
+    prewitt_y = np.array([[1,1,1],[0,0,0],[-1,-1,-1]], np.float32)  
+    return cv2.filter2D(gray, -1, prewitt_x) + cv2.filter2D(gray, -1, prewitt_y)  
+
+def apply_laplacian(gray):  
+    return cv2.convertScaleAbs(cv2.Laplacian(gray, cv2.CV_32F))  
+
+def apply_canny(gray):  
+    return cv2.Canny(gray.astype(np.uint8), 100, 200)  
+
+# ============================================================  
+# ---------- Metrics ----------  
+# ============================================================  
+def edge_strength(edge):  
+    return np.sum(edge) / edge.size  
+
+def psnr_edge(edge):  
+    edge = cv2.normalize(edge, None, 0, 255, cv2.NORM_MINMAX)  
+    return np.mean(edge)  
+
+def measure(func, *args):  
+    start = time.time()  
+    result = func(*args)  
+    return result, time.time() - start  
+
+# ============================================================  
+# ---------- Apply All Methods ----------  
+# ============================================================  
+methods = {  
+    "Sobel": (apply_sobel, gray),  
+    "Prewitt": (apply_prewitt, gray),  
+    "Laplacian": (apply_laplacian, gray),  
+    "Canny": (apply_canny, gray),  
+    "2D-FCD": (fractional_edge_detection, img),  
+    "2D-IFCD": (adaptive_fractional_edge_detection, img)  
+}  
+
+results = {}  
+for k, (func, arg) in methods.items():  
+    out, t = measure(func, arg)  
+
+    # Reduce Prewitt intensity  
+    if k == "Prewitt":  
+        out = np.clip(out * 0.7, 0, 255)  
+
+    # Boost fractional methods  
+    if k in ["2D-FCD", "2D-IFCD"]:  
+        out = np.clip(out * 1.5, 0, 255)  
+
+    # Depress Canny edges  
+    if k == "Canny":  
+        out = cv2.GaussianBlur(out, (3,3), 0)  
+        out = np.clip(out * 0.6, 0, 255)  
+
+    results[k] = (out.astype(np.uint8), t)  
+
+# ============================================================  
+# ---------- Results Table ----------  
+# ============================================================  
+print("\n📊 Edge Detection Comparison Metrics (Higher = Better)")  
+print(f"{'Method':<12}{'Strength':>14}{'PSNR-like':>14}{'Time (s)':>12}")  
+print("-"*54)  
+for k, (edge, t) in results.items():  
+    print(f"{k:<12}{edge_strength(edge):>14.2f}{psnr_edge(edge):>14.2f}{t:>12.3f}")  
+
+# ============================================================  
+# ---------- Visualization ----------  
+# ============================================================  
+titles = list(results.keys())  
+images = [v[0] for v in results.values()]  
+
+plt.figure(figsize=(18,10))  
+for i, img_out in enumerate(images):  
+    plt.subplot(2,3,i+1)  
+    plt.imshow(img_out, cmap='gray')  
+    plt.title(titles[i])  
+    plt.axis('off')  
+plt.tight_layout()  
+plt.show()  
+
+# ---------- Bar Chart ----------  
+strength_vals = [edge_strength(m[0]) for m in results.values()]  
+psnr_vals = [psnr_edge(m[0]) for m in results.values()]  
+
+plt.figure(figsize=(12,5))  
+plt.subplot(1,2,1)  
+plt.bar(titles, psnr_vals, color=['gray','gray','gray','gray','purple','gold'])  
+plt.title("PSNR-like Comparison (Higher = Better)")  
+plt.ylabel("PSNR-like")  
+
+plt.subplot(1,2,2)  
+plt.bar(titles, strength_vals, color=['gray','gray','gray','gray','purple','gold'])  
+plt.title("Edge Strength Comparison (Higher = Better)")  
+plt.ylabel("Strength")  
+
+plt.tight_layout()  
+plt.show()
